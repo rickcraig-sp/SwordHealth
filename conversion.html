@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CSV to JSON Converter</title>
+    
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            background-color: #f8f9fa;
+            color: #212529;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        }
+        h1 {
+            color: #343a40;
+            border-bottom: 2px solid #007bff;
+            padding-bottom: 10px;
+        }
+        input[type="file"] {
+            display: block;
+            margin-bottom: 15px;
+            padding: 10px;
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 12px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #ced4da;
+            cursor: not-allowed;
+        }
+        pre {
+            background-color: #ffffff;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 15px;
+            max-height: 300px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>Client-Side CSV to JSON Converter</h1>
+    <p>
+        Upload your CSV file. The conversion will run entirely in your browser.
+        The JSON file will be downloaded automatically.
+    </p>
+
+    <input type="file" id="csvFileInput" accept=".csv">
+    <button id="convertButton">Convert and Download JSON</button>
+
+    <h3>Conversion Log:</h3>
+    <pre id="logOutput">Waiting for file...</pre>
+
+
+    <script>
+        const fileInput = document.getElementById('csvFileInput');
+        const convertButton = document.getElementById('convertButton');
+        const logOutput = document.getElementById('logOutput');
+
+        // Log utility
+        function log(message) {
+            console.log(message);
+            logOutput.textContent = message + '\n' + logOutput.textContent;
+        }
+
+        // Add click event to the button
+        convertButton.addEventListener('click', () => {
+            const file = fileInput.files[0];
+            if (!file) {
+                log('Error: Please select a CSV file first.');
+                return;
+            }
+
+            log(`Processing file: ${file.name}...`);
+            convertButton.disabled = true;
+            convertButton.textContent = 'Processing...';
+            
+            const reader = new FileReader();
+            
+            // This event fires when the file is read
+            reader.onload = (event) => {
+                try {
+                    const csvData = event.target.result;
+                    const parsedData = parseCSV(csvData);
+                    const jsonData = convertDataToJSON(parsedData);
+                    
+                    // Trigger the download
+                    downloadJSON(jsonData, 'converted_properties.json');
+                    log(`Success! Converted ${parsedData.length} properties.`);
+                    
+                } catch (error) {
+                    log(`An error occurred: ${error.message}`);
+                    console.error(error);
+                } finally {
+                    convertButton.disabled = false;
+                    convertButton.textContent = 'Convert and Download JSON';
+                }
+            };
+
+            // This event fires if the file reading fails
+            reader.onerror = () => {
+                log('Error reading file.');
+                convertButton.disabled = false;
+                convertButton.textContent = 'Convert and Download JSON';
+            };
+            
+            // Start reading the file as text
+            reader.readAsText(file, 'utf-8');
+        });
+
+
+        /**
+         * This function converts the parsed CSV data (array of objects)
+         * into the final JSON structure, applying all your logic.
+         */
+        function convertDataToJSON(dataRows) {
+            const inputsList = [];
+
+            dataRows.forEach(row => {
+                // Create the base field object
+                const field_obj = {
+                    displayOrder: -1,
+                    formField: true,
+                    hasUniqueValue: false,
+                    hidden: false,
+                    
+                    // Apply mapped values
+                    label: row['Label'] || '',
+                    name: row['Field API Name'] || '',
+                    description: row['Description'] || '',
+                    type: row['Hubspot  Type'] || '', // Note: two spaces
+                    fieldType: row['Hubspot FieldType'] || '', // Note: one space
+                    groupName: row['Hubspot Property Group'] || ''
+                };
+
+                // Apply conditional logic for 'enumeration' OR 'bool' types
+                const hubspotType = row['Hubspot  Type'];
+                if (hubspotType === 'enumeration' || hubspotType === 'bool') {
+                    
+                    const options_list = [];
+                    let display_order_counter = 1;
+                    const picklistData = row['Picklist Values'] || '';
+                    
+                    if (picklistData) {
+                        const options = picklistData.split('\n');
+                        options.forEach(item => {
+                            const clean_item = item.trim();
+                            if (clean_item) {
+                                const option_obj = {
+                                    description: "",
+                                    displayOrder: display_order_counter,
+                                    hidden: false,
+                                    label: clean_item,
+                                    value: clean_item
+                                };
+                                options_list.push(option_obj);
+                                display_order_counter++;
+                            }
+                        });
+                    }
+                    field_obj.options = options_list;
+                }
+                
+                inputsList.push(field_obj);
+            });
+
+            // Create the final root dictionary
+            const finalOutput = { "inputs": inputsList };
+            
+            // Return as a pretty-printed JSON string
+            return JSON.stringify(finalOutput, null, 2);
+        }
+
+        /**
+         * A simple CSV parser that respects quoted fields.
+         * This avoids splitting on commas that are inside quotes.
+         */
+        function parseCSV(csvText) {
+            const lines = csvText.trim().split('\n');
+            if (lines.length < 2) {
+                throw new Error("CSV must have a header row and at least one data row.");
+            }
+            
+            // Extract headers (and remove potential BOM character)
+            const headers = lines[0].replace(/^\uFEFF/, '').trim().split(',').map(h => h.trim());
+            const result = [];
+            
+            // Regex to split on commas, but ignoring commas inside double quotes
+            // This is a simple parser and may fail on extremely complex CSVs
+            const regex = /,(?=(?:(?:[^"]*"){2})*[^"]*$)/;
+
+            for (let i = 1; i < lines.length; i++) {
+                const line = lines[i].trim();
+                if (!line) continue;
+
+                const values = line.split(regex);
+                const obj = {};
+                
+                for (let j = 0; j < headers.length; j++) {
+                    if (j < values.length) {
+                        let value = values[j].trim();
+                        // Clean quotes from start/end
+                        if (value.startsWith('"') && value.endsWith('"')) {
+                            value = value.substring(1, value.length - 1);
+                        }
+                        // Handle escaped double quotes ("") inside a field
+                        value = value.replace(/""/g, '"');
+                        obj[headers[j]] = value;
+                    } else {
+                        obj[headers[j]] = ''; // Handle empty or missing values
+                    }
+                }
+                result.push(obj);
+            }
+            return result;
+        }
+
+        /**
+         * Triggers a browser download for the generated JSON data.
+         */
+        function downloadJSON(jsonData, filename) {
+            // Create a blob (binary large object) from the text
+            const blob = new Blob([jsonData], { type: 'application/json' });
+            
+            // Create an invisible 'a' element
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            
+            // Create a URL for the blob
+            const url = window.URL.createObjectURL(blob);
+            a.href = url;
+            a.download = filename;
+            
+            // Append the 'a' element to the page, click it, then remove it
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+        }
+    </script>
+</body>
+</html>
