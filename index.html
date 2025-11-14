@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CSV to JSON Converter</title>
+    <title>CSV to JSON Converter (Fixed)</title>
     
     <style>
         body {
@@ -61,7 +61,7 @@
 </head>
 <body>
 
-    <h1>Client-Side CSV to JSON Converter</h1>
+    <h1>Client-Side CSV to JSON Converter (Fixed)</h1>
     <p>
         Upload your CSV file. The conversion will run entirely in your browser.
         The JSON file will be downloaded automatically.
@@ -79,13 +79,11 @@
         const convertButton = document.getElementById('convertButton');
         const logOutput = document.getElementById('logOutput');
 
-        // Log utility
         function log(message) {
             console.log(message);
             logOutput.textContent = message + '\n' + logOutput.textContent;
         }
 
-        // Add click event to the button
         convertButton.addEventListener('click', () => {
             const file = fileInput.files[0];
             if (!file) {
@@ -99,14 +97,17 @@
             
             const reader = new FileReader();
             
-            // This event fires when the file is read
             reader.onload = (event) => {
                 try {
                     const csvData = event.target.result;
-                    const parsedData = parseCSV(csvData);
+                    const parsedData = parseCSV(csvData); // Use new parser
+                    if (parsedData.length === 0) {
+                         throw new Error("CSV parsing returned no data. Check file format.");
+                    }
+                    log(`Parsed ${parsedData.length} rows from CSV.`);
+                    
                     const jsonData = convertDataToJSON(parsedData);
                     
-                    // Trigger the download
                     downloadJSON(jsonData, 'converted_properties.json');
                     log(`Success! Converted ${parsedData.length} properties.`);
                     
@@ -119,46 +120,39 @@
                 }
             };
 
-            // This event fires if the file reading fails
             reader.onerror = () => {
                 log('Error reading file.');
                 convertButton.disabled = false;
                 convertButton.textContent = 'Convert and Download JSON';
             };
             
-            // Start reading the file as text
             reader.readAsText(file, 'utf-8');
         });
-
 
         /**
          * This function converts the parsed CSV data (array of objects)
          * into the final JSON structure, applying all your logic.
+         * (This logic is unchanged)
          */
         function convertDataToJSON(dataRows) {
             const inputsList = [];
 
             dataRows.forEach(row => {
-                // Create the base field object
                 const field_obj = {
                     displayOrder: -1,
                     formField: true,
                     hasUniqueValue: false,
                     hidden: false,
-                    
-                    // Apply mapped values
                     label: row['Label'] || '',
                     name: row['Field API Name'] || '',
                     description: row['Description'] || '',
-                    type: row['Hubspot  Type'] || '', // Note: two spaces
-                    fieldType: row['Hubspot FieldType'] || '', // Note: one space
+                    type: row['Hubspot  Type'] || '',
+                    fieldType: row['Hubspot FieldType'] || '',
                     groupName: row['Hubspot Property Group'] || ''
                 };
 
-                // Apply conditional logic for 'enumeration' OR 'bool' types
                 const hubspotType = row['Hubspot  Type'];
                 if (hubspotType === 'enumeration' || hubspotType === 'bool') {
-                    
                     const options_list = [];
                     let display_order_counter = 1;
                     const picklistData = row['Picklist Values'] || '';
@@ -186,74 +180,98 @@
                 inputsList.push(field_obj);
             });
 
-            // Create the final root dictionary
             const finalOutput = { "inputs": inputsList };
-            
-            // Return as a pretty-printed JSON string
             return JSON.stringify(finalOutput, null, 2);
         }
 
         /**
-         * A simple CSV parser that respects quoted fields.
-         * This avoids splitting on commas that are inside quotes.
+         * [NEW & IMPROVED PARSER]
+         * A state-machine-based CSV parser that correctly handles
+         * newlines in quoted fields, and escaped quotes ("").
          */
         function parseCSV(csvText) {
-            const lines = csvText.trim().split('\n');
-            if (lines.length < 2) {
-                throw new Error("CSV must have a header row and at least one data row.");
-            }
-            
-            // Extract headers (and remove potential BOM character)
-            const headers = lines[0].replace(/^\uFEFF/, '').trim().split(',').map(h => h.trim());
-            const result = [];
-            
-            // Regex to split on commas, but ignoring commas inside double quotes
-            // This is a simple parser and may fail on extremely complex CSVs
-            const regex = /,(?=(?:(?:[^"]*"){2})*[^"]*$)/;
+            const rows = [];
+            let headers = [];
+            let currentRow = [];
+            let inQuotedField = false;
+            let field = '';
 
-            for (let i = 1; i < lines.length; i++) {
-                const line = lines[i].trim();
-                if (!line) continue;
+            // Ensure the text ends with a newline to process the last row
+            csvText = csvText.trim() + '\n';
 
-                const values = line.split(regex);
-                const obj = {};
-                
-                for (let j = 0; j < headers.length; j++) {
-                    if (j < values.length) {
-                        let value = values[j].trim();
-                        // Clean quotes from start/end
-                        if (value.startsWith('"') && value.endsWith('"')) {
-                            value = value.substring(1, value.length - 1);
-                        }
-                        // Handle escaped double quotes ("") inside a field
-                        value = value.replace(/""/g, '"');
-                        obj[headers[j]] = value;
+            for (let i = 0; i < csvText.length; i++) {
+                const char = csvText[i];
+                const nextChar = csvText[i + 1];
+
+                if (inQuotedField) {
+                    // We are inside a quoted field
+                    if (char === '"' && nextChar === '"') {
+                        // This is an escaped quote ("")
+                        field += '"';
+                        i++; // Skip the next quote
+                    } else if (char === '"') {
+                        // This is the end of the quoted field
+                        inQuotedField = false;
                     } else {
-                        obj[headers[j]] = ''; // Handle empty or missing values
+                        // Any other character, including \n
+                        field += char;
+                    }
+                } else {
+                    // We are NOT inside a quoted field
+                    if (char === '"') {
+                        // Start of a new quoted field
+                        inQuotedField = true;
+                    } else if (char === ',') {
+                        // End of a field
+                        currentRow.push(field);
+                        field = '';
+                    } else if (char === '\n' || char === '\r') {
+                        // End of a row
+                        if (char === '\r' && nextChar === '\n') {
+                            i++; // Skip the \n in \r\n
+                        }
+                        
+                        // Push the last field of the row
+                        currentRow.push(field);
+                        field = '';
+
+                        if (headers.length === 0) {
+                            // This was the header row
+                            headers = currentRow.map((h, index) => {
+                                if (index === 0) return h.replace(/^\uFEFF/, '').trim(); // Clean BOM
+                                return h.trim();
+                            });
+                        } else {
+                            // This is a data row
+                            if (currentRow.length === headers.length) {
+                                const obj = {};
+                                for (let j = 0; j < headers.length; j++) {
+                                    obj[headers[j]] = currentRow[j];
+                                }
+                                rows.push(obj);
+                            }
+                        }
+                        currentRow = []; // Reset for the next row
+                    } else {
+                        // A regular character
+                        field += char;
                     }
                 }
-                result.push(obj);
             }
-            return result;
+            return rows;
         }
 
         /**
          * Triggers a browser download for the generated JSON data.
+         * (This logic is unchanged)
          */
         function downloadJSON(jsonData, filename) {
-            // Create a blob (binary large object) from the text
             const blob = new Blob([jsonData], { type: 'application/json' });
-            
-            // Create an invisible 'a' element
             const a = document.createElement('a');
             a.style.display = 'none';
-            
-            // Create a URL for the blob
             const url = window.URL.createObjectURL(blob);
             a.href = url;
             a.download = filename;
-            
-            // Append the 'a' element to the page, click it, then remove it
             document.body.appendChild(a);
             a.click();
             window.URL.revokeObjectURL(url);
